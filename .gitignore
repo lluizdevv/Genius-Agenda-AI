@@ -1,0 +1,14 @@
+# Segredos e ambiente
+.env
+*.pem
+*.key
+credentials*.json
+client_secret*.json
+
+# Dados locais dos containers
+n8n_data/
+waha_sessions/
+*.sqlite
+
+# Node
+node_modules/

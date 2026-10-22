@@ -1,0 +1,11 @@
+{
+  "name": "genius-agenda-ai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Genius Agenda AI - agente de agenda no WhatsApp (n8n + WAHA + Google Calendar)",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": { "node": ">=20" }
+}
