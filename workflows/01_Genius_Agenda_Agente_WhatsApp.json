@@ -1,0 +1,343 @@
+{
+  "name": "Genius Agenda AI - 1 Agente WhatsApp",
+  "nodes": [
+    {
+      "id": "3f1b5d35-5b25-4f63-9661-e14c7ab16ab8",
+      "name": "Webhook WAHA",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "13522e81-bd88-45cd-98de-2a2a831a7eb4",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "genius-agenda",
+        "options": {}
+      }
+    },
+    {
+      "id": "8b7f7787-ff81-4d4e-b566-c4409443e9c0",
+      "name": "Filtrar e deduplicar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// ===== CONFIGURAÇÃO =====\n// Números autorizados (formato WAHA). Troque pelo seu número: DDI+DDD+número@c.us\nconst ALLOWED = ['5581999999999@c.us'];\n// ========================\nconst input = $input.first().json;\nconst body = input.body || input;\nconst p = body.payload || {};\n\nif (body.event !== 'message' || p.fromMe) return [];          // só mensagens recebidas\nconst chatId = p.from || '';\nif (chatId.endsWith('@g.us')) return [];                       // ignora grupos\nif (!ALLOWED.includes(chatId)) return [];                      // só números autorizados\nconst text = (p.body || '').trim();\nif (!text) return [];                                          // ignora mídia sem texto\n\n// Idempotência: o mesmo webhook (mesmo message id) não é processado duas vezes\nconst sd = $getWorkflowStaticData('global');\nsd.seen = sd.seen || {};\nconst now = Date.now();\nfor (const k of Object.keys(sd.seen)) if (now - sd.seen[k] > 6 * 3600 * 1000) delete sd.seen[k];\nif (sd.seen[p.id]) return [];\nsd.seen[p.id] = now;\n\nreturn [{ json: { chatId, text, messageId: p.id } }];"
+      }
+    },
+    {
+      "id": "5df76b11-0963-4d2a-86b8-db570a371c40",
+      "name": "Genius Agenda AI",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        480,
+        300
+      ],
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.text }}",
+        "options": {
+          "systemMessage": "=Você é o Genius Agenda AI, assistente pessoal de agenda no WhatsApp. Responda sempre em português do Brasil, de forma curta, clara e cordial (estilo WhatsApp).\n\nCONTEXTO DE TEMPO\n- Agora: {{ $now.setZone('America/Recife').toFormat(\"cccc, dd/LL/yyyy HH:mm\") }} (fuso America/Recife, UTC-03:00).\n- Converta expressões relativas (\"amanhã\", \"próxima terça\", \"sexta\") em datas absolutas a partir de agora. \"Próxima terça\" é sempre a terça-feira após hoje.\n- Ao chamar ferramentas, use datas ISO 8601 com offset, ex.: 2026-10-23T14:00:00-03:00.\n\nREGRAS OBRIGATÓRIAS\n1. Nunca invente dados. Para qualquer informação de agenda, use as ferramentas. Nunca simule uma operação.\n2. Só diga que criou, alterou ou excluiu algo depois que a ferramenta retornar sucesso. Se a ferramenta retornar erro, diga claramente que NÃO foi concluído e o motivo resumido.\n3. Se faltar informação importante (horário exato, data, qual compromisso), PERGUNTE. \"Amanhã à tarde\" não é um horário: peça a hora exata. Se não houver duração informada, assuma 1 hora e avise.\n4. CRIAR: antes de criar, consulte a agenda no intervalo desejado. Se houver conflito, avise e ofereça alternativas (outro horário) antes de criar. Inclua participantes na descrição quando informados.\n5. ALTERAR ou EXCLUIR: primeiro consulte eventos para localizar o compromisso. Se houver mais de um candidato (ex.: duas reuniões com o mesmo cliente), liste-os numerados com data/hora e pergunte qual. Se a mensagem for \"essa reunião\" ou ambígua, use o histórico da conversa; se não der para identificar com certeza, pergunte.\n6. EXCLUIR: peça confirmação explícita (\"Confirma excluir X em DD/MM às HH:MM?\") e só exclua depois de um \"sim\".\n7. ALTERAR: ao usar a ferramenta de atualização, informe SEMPRE o EventId, o título atual (ou novo), início e fim completos (mantendo a duração original se o usuário só mudou o horário de início).\n8. RESUMOS (dia, semana, mês): consulte o intervalo real, ordene por data e destaque o que é importante (reuniões com pessoas externas, viagens, entrevistas, prazos). Se não houver eventos, diga isso.\n9. PREPARAÇÃO (\"me prepara para a reunião...\"): consulte o evento, classifique o tipo (reunião, estudo, viagem, entrevista, outro) e dê um briefing curto: horário, participantes, descrição, 3 a 5 pontos de preparo.\n10. Formate datas como \"qui, 23/10 às 14:00\". Use no máximo alguns emojis.",
+          "maxIterations": 10
+        }
+      }
+    },
+    {
+      "id": "06fb693e-2843-45fb-85d3-41f03b781a04",
+      "name": "Gemini Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        380,
+        560
+      ],
+      "parameters": {
+        "modelName": "models/gemini-3.8-flash",
+        "options": {
+          "temperature": 0.2
+        }
+      }
+    },
+    {
+      "id": "084c3abe-202e-4708-94e4-6c7d6bbbb40e",
+      "name": "Memória da conversa",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        540,
+        560
+      ],
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Filtrar e deduplicar').first().json.chatId }}",
+        "contextWindowLength": 12
+      }
+    },
+    {
+      "id": "f7b60369-67af-46e0-af1e-da9d7ee58341",
+      "name": "Consultar eventos",
+      "type": "n8n-nodes-base.googleCalendarTool",
+      "typeVersion": 1.3,
+      "position": [
+        700,
+        560
+      ],
+      "parameters": {
+        "resource": "event",
+        "operation": "getAll",
+        "calendar": {
+          "__rl": true,
+          "value": "primary",
+          "mode": "id"
+        },
+        "returnAll": false,
+        "limit": 50,
+        "timeMin": "={{ $fromAI('Inicio_do_periodo', 'Inicio do periodo em ISO 8601 com offset -03:00', 'string') }}",
+        "timeMax": "={{ $fromAI('Fim_do_periodo', 'Fim do periodo em ISO 8601 com offset -03:00', 'string') }}",
+        "options": {
+          "singleEvents": true,
+          "orderBy": "startTime",
+          "query": "={{ $fromAI('Busca', 'Texto opcional para filtrar por titulo/participante. Vazio se nao precisar', 'string') }}"
+        }
+      }
+    },
+    {
+      "id": "56aba280-5888-4ad6-ab61-6277d1b7c91d",
+      "name": "Criar evento",
+      "type": "n8n-nodes-base.googleCalendarTool",
+      "typeVersion": 1.3,
+      "position": [
+        860,
+        560
+      ],
+      "parameters": {
+        "resource": "event",
+        "operation": "create",
+        "calendar": {
+          "__rl": true,
+          "value": "primary",
+          "mode": "id"
+        },
+        "start": "={{ $fromAI('Inicio', 'Inicio do evento em ISO 8601 com offset -03:00', 'string') }}",
+        "end": "={{ $fromAI('Fim', 'Fim do evento em ISO 8601 com offset -03:00', 'string') }}",
+        "additionalFields": {
+          "summary": "={{ $fromAI('Titulo', 'Titulo do evento', 'string') }}",
+          "description": "={{ $fromAI('Descricao', 'Descricao e participantes citados. Vazio se nao houver', 'string') }}"
+        }
+      }
+    },
+    {
+      "id": "af7f6e1a-5b20-4d99-b481-208528d760c4",
+      "name": "Atualizar evento",
+      "type": "n8n-nodes-base.googleCalendarTool",
+      "typeVersion": 1.3,
+      "position": [
+        1020,
+        560
+      ],
+      "parameters": {
+        "resource": "event",
+        "operation": "update",
+        "calendar": {
+          "__rl": true,
+          "value": "primary",
+          "mode": "id"
+        },
+        "eventId": "={{ $fromAI('EventId', 'ID do evento obtido na consulta', 'string') }}",
+        "updateFields": {
+          "start": "={{ $fromAI('Novo_inicio', 'Inicio em ISO 8601 com offset -03:00', 'string') }}",
+          "end": "={{ $fromAI('Novo_fim', 'Fim em ISO 8601 com offset -03:00', 'string') }}",
+          "summary": "={{ $fromAI('Titulo', 'Titulo do evento (atual ou novo)', 'string') }}"
+        }
+      }
+    },
+    {
+      "id": "928205ab-94c5-4fb5-9ed7-a9bda9895067",
+      "name": "Excluir evento",
+      "type": "n8n-nodes-base.googleCalendarTool",
+      "typeVersion": 1.3,
+      "position": [
+        1180,
+        560
+      ],
+      "parameters": {
+        "resource": "event",
+        "operation": "delete",
+        "calendar": {
+          "__rl": true,
+          "value": "primary",
+          "mode": "id"
+        },
+        "eventId": "={{ $fromAI('EventId', 'ID do evento obtido na consulta, ja confirmado pelo usuario', 'string') }}"
+      }
+    },
+    {
+      "id": "d05892e1-3efb-46ec-ae5b-fffbf80b605b",
+      "name": "Enviar resposta WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        800,
+        200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://waha:3000/api/sendText",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ session: \"default\", chatId: $(\"Filtrar e deduplicar\").first().json.chatId, text: $json.output }) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "e023b075-d30a-4589-b421-58e6ae2f331f",
+      "name": "Enviar aviso de falha",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        800,
+        420
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://waha:3000/api/sendText",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ session: \"default\", chatId: $(\"Filtrar e deduplicar\").first().json.chatId, text: \"⚠️ Não consegui concluir essa operação agora (falha técnica). Nada foi alterado na sua agenda. Tente novamente em instantes.\" }) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Webhook WAHA": {
+      "main": [
+        [
+          {
+            "node": "Filtrar e deduplicar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filtrar e deduplicar": {
+      "main": [
+        [
+          {
+            "node": "Genius Agenda AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Genius Agenda AI": {
+      "main": [
+        [
+          {
+            "node": "Enviar resposta WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Enviar aviso de falha",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Genius Agenda AI",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Memória da conversa": {
+      "ai_memory": [
+        [
+          {
+            "node": "Genius Agenda AI",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar eventos": {
+      "ai_tool": [
+        [
+          {
+            "node": "Genius Agenda AI",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Criar evento": {
+      "ai_tool": [
+        [
+          {
+            "node": "Genius Agenda AI",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Atualizar evento": {
+      "ai_tool": [
+        [
+          {
+            "node": "Genius Agenda AI",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Excluir evento": {
+      "ai_tool": [
+        [
+          {
+            "node": "Genius Agenda AI",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Recife"
+  },
+  "pinData": {}
+}

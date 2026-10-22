@@ -1,0 +1,156 @@
+{
+  "name": "Genius Agenda AI - 2 Lembretes automáticos",
+  "nodes": [
+    {
+      "id": "b60c146e-992c-45e4-86bd-bddd657db023",
+      "name": "A cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "13a1b57f-df24-4e6f-bdbf-1b47eb3091d0",
+      "name": "Buscar eventos próximas 25h",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        240,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "parameters": {
+        "resource": "event",
+        "operation": "getAll",
+        "calendar": {
+          "__rl": true,
+          "value": "primary",
+          "mode": "id"
+        },
+        "returnAll": true,
+        "timeMin": "={{ $now.toISO() }}",
+        "timeMax": "={{ $now.plus({ hours: 25 }).toISO() }}",
+        "options": {
+          "singleEvents": true,
+          "orderBy": "startTime"
+        }
+      }
+    },
+    {
+      "id": "378728b6-d19b-4cb1-a33a-4d0c80151b8a",
+      "name": "Calcular lembretes devidos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// ===== CONFIGURAÇÃO =====\nconst OWNER = '5581999999999@c.us';      // quem recebe os lembretes\nconst OFFSETS = [1440, 60, 15];          // minutos antes: 24h, 1h, 15min (configurável)\nconst GRACE = 5;                          // tolerância (min) caso o agendador atrase\nconst TZ = 'America/Recife';\n// ========================\nconst sd = $getWorkflowStaticData('global');\nsd.sent = sd.sent || {};\nconst now = Date.now();\nfor (const k of Object.keys(sd.sent)) if (now - sd.sent[k] > 3 * 24 * 3600 * 1000) delete sd.sent[k];\n\nconst kind = (t) => {\n  t = (t || '').toLowerCase();\n  if (/entrevista/.test(t)) return ['Entrevista', '🎯'];\n  if (/viagem|voo|vôo|hotel|aeroporto/.test(t)) return ['Viagem', '✈️'];\n  if (/estudo|aula|prova|curso|estudar/.test(t)) return ['Estudo', '📚'];\n  if (/reuni|call|meeting|alinhamento/.test(t)) return ['Reunião', '👥'];\n  return ['Compromisso', '📌'];\n};\nconst label = (off) => off >= 1440 ? `${Math.round(off/1440)} dia(s)` : off >= 60 ? `${Math.round(off/60)} hora(s)` : `${off} minutos`;\n\nconst out = [];\nfor (const it of $input.all()) {\n  const e = it.json;\n  if (!e || e.status === 'cancelled') continue;\n  const raw = typeof e.start === 'string' ? e.start : (e.start && e.start.dateTime);\n  if (!raw) continue;                                   // ignora eventos de dia inteiro\n  const start = new Date(raw).getTime();\n  if (isNaN(start)) continue;\n  const minsLeft = (start - now) / 60000;\n  for (const off of OFFSETS) {\n    const key = `${e.id}|${raw}|${off}`;                // inclui o horário: se mudar, é um lembrete novo\n    if (sd.sent[key]) continue;\n    if (minsLeft > 0 && minsLeft <= off && minsLeft > off - GRACE) {\n      const d = new Date(start);\n      const hora = d.toLocaleTimeString('pt-BR', { timeZone: TZ, hour: '2-digit', minute: '2-digit' });\n      const dia = d.toLocaleDateString('pt-BR', { timeZone: TZ, weekday: 'short', day: '2-digit', month: '2-digit' });\n      const [tipo, emoji] = kind(e.summary);\n      let text = `${emoji} *${tipo}* em ${label(off)}\\n*${e.summary || '(sem título)'}*\\n🗓 ${dia} às ${hora}`;\n      if (e.location) text += `\\n📍 ${e.location}`;\n      if (e.description) text += `\\n📝 ${String(e.description).slice(0, 200)}`;\n      out.push({ json: { chatId: OWNER, text, key } });\n    }\n  }\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "184562e8-029a-46e5-99a7-09a368bdd69e",
+      "name": "Enviar lembrete WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://waha:3000/api/sendText",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ session: \"default\", chatId: $json.chatId, text: $json.text }) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "fb237554-ccfb-42ee-9e1e-fe25a4e347fa",
+      "name": "Registrar enviados",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Só marca como enviado se o envio deu certo (se falhar, tenta de novo no próximo minuto)\nconst sd = $getWorkflowStaticData('global');\nsd.sent = sd.sent || {};\nconst src = $('Calcular lembretes devidos').all();\n$input.all().forEach((it, i) => {\n  if (!it.json.error && src[i]) sd.sent[src[i].json.key] = Date.now();\n});\nreturn [];"
+      }
+    }
+  ],
+  "connections": {
+    "A cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Buscar eventos próximas 25h",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar eventos próximas 25h": {
+      "main": [
+        [
+          {
+            "node": "Calcular lembretes devidos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calcular lembretes devidos": {
+      "main": [
+        [
+          {
+            "node": "Enviar lembrete WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar lembrete WhatsApp": {
+      "main": [
+        [
+          {
+            "node": "Registrar enviados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Recife"
+  },
+  "pinData": {}
+}
